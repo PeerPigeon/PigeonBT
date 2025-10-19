@@ -3,7 +3,16 @@ declare class MockAdapter implements MeshAdapter {
     private listeners;
     private knownDevices;
     private connected;
+    private scanning;
     startScan(): Promise<void>;
+    stopScan(): void;
+    getDiscoveredDevices(): {
+        id: string;
+        name: string;
+        rssi: number;
+        lastSeen: number;
+        connected: boolean;
+    }[];
     connect(id: string): Promise<void>;
     disconnect(id: string): Promise<void>;
     send(toId: string, bytes: Uint8Array): Promise<void>;
@@ -20,15 +29,32 @@ type WebBluetoothOptions = {
     rxCharacteristicUUID?: BluetoothCharacteristicUUID;
     optionalServices?: BluetoothServiceUUID[];
     acceptAllDevices?: boolean;
+    autoDiscovery?: boolean;
+    scanDuration?: number;
+    rssiThreshold?: number;
+    nameFilters?: string[];
 };
 declare class WebBluetoothAdapter implements MeshAdapter {
     private options;
     private bus;
     private listeners;
     private knownDevices;
+    private discoveredDevices;
     private connections;
+    private scanController;
+    private scanTimer;
     constructor(options?: WebBluetoothOptions);
     startScan(): Promise<void>;
+    private tryExperimentalScanning;
+    private promptDeviceSelection;
+    stopScan(): void;
+    getDiscoveredDevices(): Array<{
+        id: string;
+        name?: string;
+        rssi?: number;
+        lastSeen: number;
+        connected: boolean;
+    }>;
     private resolveTxRx;
     private ensureConnected;
     connect(id: string): Promise<void>;
@@ -45,6 +71,8 @@ type MeshNode = {
     neighbors: Set<string>;
     lastSeen: number;
     online: boolean;
+    rssi?: number;
+    discovered?: boolean;
 };
 type MeshPayload = {
     type: string;
@@ -64,6 +92,8 @@ interface AdapterEventMap {
     deviceFound: {
         id: string;
         name?: string;
+        rssi?: number;
+        discovered?: boolean;
     };
     deviceConnected: {
         id: string;
@@ -81,13 +111,23 @@ interface AdapterEventMap {
     topology: {
         edges: Array<[string, string]>;
     };
+    scanStarted: {};
+    scanStopped: {};
 }
 type AdapterListener<K extends keyof AdapterEventMap> = (event: AdapterEventMap[K]) => void;
 interface MeshAdapter {
     startScan(): Promise<void>;
+    stopScan?(): void;
     connect(id: string): Promise<void>;
     disconnect(id: string): Promise<void>;
     send(toId: string, bytes: Uint8Array): Promise<void>;
+    getDiscoveredDevices?(): Array<{
+        id: string;
+        name?: string;
+        rssi?: number;
+        lastSeen: number;
+        connected: boolean;
+    }>;
     on<K extends keyof AdapterEventMap>(event: K, listener: AdapterListener<K>): void;
     off<K extends keyof AdapterEventMap>(event: K, listener: AdapterListener<K>): void;
 }
@@ -100,7 +140,7 @@ declare class EventBus<T extends Record<string, any>> {
 declare class Topology {
     nodes: Map<string, MeshNode>;
     edges: Set<string>;
-    addNode(id: string, label?: string): MeshNode;
+    addNode(id: string, label?: string, rssi?: number, discovered?: boolean): MeshNode;
     setOffline(id: string): void;
     link(a: string, b: string): void;
     unlink(a: string, b: string): void;
@@ -111,6 +151,8 @@ declare class Topology {
             online: boolean;
             lastSeen: number;
             neighbors: string[];
+            rssi: number | undefined;
+            discovered: boolean | undefined;
         }[];
         edges: [string, string][];
     };
@@ -137,14 +179,24 @@ declare class MeshNetwork {
             nodes: ReturnType<Topology["snapshot"]>["nodes"];
             edges: ReturnType<Topology["snapshot"]>["edges"];
         };
+        scanStarted: {};
+        scanStopped: {};
     }>;
     private router;
     constructor(adapter: MeshAdapter, localId?: string);
     private bindAdapter;
     start(): Promise<void>;
+    stop(): Promise<void>;
     connect(id: string): Promise<void>;
     disconnect(id: string): Promise<void>;
     send(toId: string, payload: MeshPayload, onTimeout?: (id: string) => void): Promise<MeshMessage>;
+    getDiscoveredDevices(): {
+        id: string;
+        name?: string;
+        rssi?: number;
+        lastSeen: number;
+        connected: boolean;
+    }[];
     stateSnapshot(): {
         nodes: {
             id: string;
@@ -152,6 +204,8 @@ declare class MeshNetwork {
             online: boolean;
             lastSeen: number;
             neighbors: string[];
+            rssi: number | undefined;
+            discovered: boolean | undefined;
         }[];
         edges: [string, string][];
     };

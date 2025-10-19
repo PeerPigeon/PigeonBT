@@ -3,33 +3,69 @@ import type { MeshAdapter } from "../index";
 
 export class MockAdapter implements MeshAdapter {
   private bus = new EventBus<{
-    deviceFound: { id: string; name?: string };
+    deviceFound: { id: string; name?: string; rssi?: number; discovered?: boolean };
     deviceConnected: { id: string };
     deviceDisconnected: { id: string };
     data: { from: string; bytes: Uint8Array };
     heartbeat: { id: string };
     topology: { edges: Array<[string, string]> };
+    scanStarted: {};
+    scanStopped: {};
   }>();
 
   private listeners: Map<string, Set<(e: any) => void>> = new Map();
   private knownDevices = [
-    { id: "mock-1", name: "Mock Device 1" },
-    { id: "mock-2", name: "Mock Device 2" }
+    { id: "mock-1", name: "Mock Device 1", rssi: -45 },
+    { id: "mock-2", name: "Mock Device 2", rssi: -62 },
+    { id: "mock-3", name: "Arduino BLE", rssi: -78 },
+    { id: "mock-4", name: "ESP32-Scanner", rssi: -55 }
   ];
   private connected = new Set<string>();
+  private scanning = false;
 
   async startScan(): Promise<void> {
-    // Simulate discovery
-    for (const d of this.knownDevices) {
+    this.scanning = true;
+    this.emit("scanStarted", {});
+    
+    // Simulate discovery with varying RSSI
+    for (let i = 0; i < this.knownDevices.length; i++) {
+      const d = this.knownDevices[i];
       setTimeout(() => {
-        this.emit("deviceFound", { id: d.id, name: d.name });
-        this.emit("heartbeat", { id: d.id });
-      }, 200);
+        if (this.scanning) {
+          // Add some RSSI variation
+          const rssiVariation = Math.floor(Math.random() * 10) - 5;
+          this.emit("deviceFound", { 
+            id: d.id, 
+            name: d.name, 
+            rssi: d.rssi + rssiVariation,
+            discovered: true 
+          });
+          this.emit("heartbeat", { id: d.id });
+        }
+      }, 200 + i * 300);
     }
+    
     // Simulate topology info between discovered devices
     setTimeout(() => {
-      this.emit("topology", { edges: [["mock-1", "mock-2"]] });
-    }, 500);
+      if (this.scanning) {
+        this.emit("topology", { edges: [["mock-1", "mock-2"], ["mock-3", "mock-4"]] });
+      }
+    }, 1500);
+  }
+
+  stopScan(): void {
+    this.scanning = false;
+    this.emit("scanStopped", {});
+  }
+
+  getDiscoveredDevices() {
+    return this.knownDevices.map(d => ({
+      id: d.id,
+      name: d.name,
+      rssi: d.rssi + Math.floor(Math.random() * 6) - 3, // Small RSSI variation
+      lastSeen: Date.now() - Math.floor(Math.random() * 30000), // Random last seen within 30s
+      connected: this.connected.has(d.id)
+    }));
   }
 
   async connect(id: string): Promise<void> {

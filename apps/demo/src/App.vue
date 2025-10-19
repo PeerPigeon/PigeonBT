@@ -10,6 +10,10 @@ const serviceUUID = ref('')
 const txUUID = ref('')
 const rxUUID = ref('')
 const optionalServices = ref('')
+const autoDiscovery = ref(true)
+const scanDuration = ref(30)
+const rssiThreshold = ref(-80)
+const nameFiltersInput = ref('')
 
 onMounted(() => {
   store.init()
@@ -18,6 +22,10 @@ onMounted(() => {
   txUUID.value = store.txUUID
   rxUUID.value = store.rxUUID
   optionalServices.value = store.optionalServices
+  autoDiscovery.value = store.autoDiscovery
+  scanDuration.value = store.scanDuration
+  rssiThreshold.value = store.rssiThreshold
+  nameFiltersInput.value = store.nameFilters.join(',')
 })
 
 const nodes = computed(() => store.nodes)
@@ -65,13 +73,36 @@ const statusLabel = (s?: 'sent'|'ack'|'timeout') => {
   }[s][lang.value]
 }
 
-function connect(id:string){ store.connect(id) }
+function connect(id:string){ 
+  const node = store.nodes.find(n => n.id === id)
+  if (node) node.connecting = true
+  store.connect(id).finally(() => {
+    if (node) node.connecting = false
+  })
+}
 function disconnect(id:string){ store.disconnect(id) }
 async function send(){ if(toId.value && text.value){ await store.sendText(toId.value, text.value); text.value='' } }
 function setAdapter(kind: 'web'|'mock'){ store.setAdapterKind(kind); store.init() }
 function updateRoom(){ store.setRoomId(roomIdInput.value) }
 function authorize(){ store.startScan() }
 function applyUUIDs(){ store.setAdapterUUIDs({ serviceUUID: serviceUUID.value, txUUID: txUUID.value, rxUUID: rxUUID.value, optionalServices: optionalServices.value }); store.init() }
+function updateDiscoverySettings(){ 
+  const nameFilters = nameFiltersInput.value.split(',').map(s => s.trim()).filter(Boolean)
+  store.setDiscoveryOptions({ 
+    autoDiscovery: autoDiscovery.value, 
+    scanDuration: scanDuration.value, 
+    rssiThreshold: rssiThreshold.value, 
+    nameFilters 
+  })
+  store.init() 
+}
+
+function getRSSIClass(rssi: number): string {
+  if (rssi >= -50) return 'rssi-excellent'
+  if (rssi >= -60) return 'rssi-good'  
+  if (rssi >= -70) return 'rssi-fair'
+  return 'rssi-poor'
+}
 
 const positions = computed(() => {
   const N = nodes.value.length || 1
@@ -141,16 +172,72 @@ function pos(id:string){ return positions.value.get(id) }
       </div>
     </div>
 
+    <div class="discovery-config" v-if="adapterKind === 'web'">
+      <h4>Discovery Settings</h4>
+      <div class="config-grid">
+        <div class="config-item">
+          <label>
+            <input type="checkbox" v-model="autoDiscovery" @change="updateDiscoverySettings" />
+            Auto Discovery
+          </label>
+        </div>
+        <div class="config-item">
+          <label>Scan Duration (seconds)</label>
+          <input type="number" v-model.number="scanDuration" @change="updateDiscoverySettings" min="5" max="300" />
+        </div>
+        <div class="config-item">
+          <label>RSSI Threshold (dBm)</label>
+          <input type="number" v-model.number="rssiThreshold" @change="updateDiscoverySettings" min="-100" max="-30" />
+        </div>
+        <div class="config-item">
+          <label>Name Filters (comma-separated)</label>
+          <input v-model="nameFiltersInput" @change="updateDiscoverySettings" placeholder="e.g. Arduino,ESP32,Nordic" />
+        </div>
+      </div>
+    </div>
+
     <section class="panel">
-      <h3>{{ tt('devices') }}</h3>
-      <ul class="nodes">
-        <li v-for="n in nodes" :key="n.id">
-          <span class="dot" :class="{ online: n.online }"></span>
-          <strong>{{ n.label || n.id }}</strong>
-          <small>{{ tt('lastHeartbeat') }} {{ new Date(n.lastSeen).toLocaleTimeString() }}</small>
+      <h3>{{ tt('devices') }} 
+        <span v-if="store.scanning" class="scanning-indicator">🔍 Scanning...</span>
+        <span v-else-if="store.adapterKind === 'web'" class="scan-controls">
+          <button @click="store.startScan()" :disabled="store.scanning">Start Scan</button>
+          <button @click="store.stopScan()" :disabled="!store.scanning">Stop Scan</button>
+        </span>
+      </h3>
+      
+      <div v-if="!store.scanning && nodes.length === 0" class="no-devices-message">
+        <p>📱 No devices found</p>
+        <p><small>
+          Try clicking "Start Scan" to discover nearby Bluetooth devices, or use "Authorize devices" to manually select a device.
+          <br>Make sure Bluetooth is enabled and you're using Chrome/Edge with HTTPS or localhost.
+        </small></p>
+      </div>
+      
+      <ul class="nodes" v-if="nodes.length > 0">
+        <li v-for="n in nodes" :key="n.id" class="device-item">
+          <div class="device-status">
+            <span class="dot" :class="{ 
+              online: n.online, 
+              discovered: n.discovered && !n.online,
+              connecting: n.connecting 
+            }"></span>
+            <span class="discovery-badge" v-if="n.discovered && !n.online">📡</span>
+            <span class="connecting-badge" v-if="n.connecting">⏳</span>
+          </div>
+          <div class="device-info">
+            <strong>{{ n.label || n.id }}</strong>
+            <div class="device-details">
+              <small>{{ tt('lastHeartbeat') }} {{ new Date(n.lastSeen).toLocaleTimeString() }}</small>
+              <span v-if="n.rssi" class="rssi" :class="getRSSIClass(n.rssi)">
+                📶 {{ n.rssi }}dBm
+              </span>
+              <span v-if="n.discovered" class="discovered-tag">Discovered</span>
+            </div>
+          </div>
           <div class="ops">
-            <button v-if="!n.online" @click="connect(n.id)">{{ tt('connect') }}</button>
-            <button v-else @click="disconnect(n.id)">{{ tt('disconnect') }}</button>
+            <button v-if="!n.online && !n.connecting" @click="connect(n.id)">{{ tt('connect') }}</button>
+            <button v-else-if="n.online" @click="disconnect(n.id)">{{ tt('disconnect') }}</button>
+            <span v-else-if="n.connecting" class="connecting-text">Connecting...</span>
           </div>
         </li>
       </ul>
@@ -212,12 +299,108 @@ header{ display:flex; align-items:center; justify-content:space-between; margin-
 .uuid-config{ display:flex; gap:8px; align-items:flex-end; margin:8px 0; flex-wrap:wrap; }
 .uuid-config .row{ display:flex; flex-direction:column; gap:4px; }
 .uuid-config .row input{ padding:6px; width: 280px; }
+
+/* Discovery configuration styles */
+.discovery-config{ 
+  background:#f0f8ff; 
+  padding:12px; 
+  border-radius:8px; 
+  margin:8px 0; 
+  border:1px solid #e1f5fe;
+}
+.discovery-config h4{ margin:0 0 12px 0; color:#1976d2; }
+.config-grid{ 
+  display:grid; 
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+  gap:12px; 
+}
+.config-item{ display:flex; flex-direction:column; gap:4px; }
+.config-item label{ font-size:12px; font-weight:bold; color:#555; }
+.config-item input[type="checkbox"]{ margin-right:6px; }
+.config-item input[type="number"], .config-item input[type="text"]{ padding:6px; border:1px solid #ddd; border-radius:4px; }
 .panel{ background:#f7f7f9; padding:12px; border-radius:8px; margin-bottom:12px; }
+.panel h3{ display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+
+/* Scanning indicator styles */
+.scanning-indicator{ 
+  color:#646cff; 
+  font-size:14px; 
+  animation: pulse 1.5s ease-in-out infinite; 
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.scan-controls{ display:flex; gap:8px; }
+.scan-controls button{ padding:4px 8px; font-size:12px; }
+
+/* Enhanced device list styles */
 .nodes{ list-style:none; padding:0; margin:0; }
-.nodes li{ display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom: 1px dashed #e0e0e0; }
-.nodes .dot{ width:8px; height:8px; border-radius:50%; background:#ccc; }
-.nodes .dot.online{ background:#42b883; }
-.nodes .ops button{ margin-left:auto; }
+.no-devices-message{ 
+  text-align:center; 
+  padding:20px; 
+  color:#666; 
+  background:#f9f9f9; 
+  border-radius:8px; 
+  border:2px dashed #ddd; 
+}
+.no-devices-message p{ margin:8px 0; }
+.device-item{ 
+  display:flex; 
+  align-items:center; 
+  gap:12px; 
+  padding:8px 0; 
+  border-bottom: 1px dashed #e0e0e0; 
+}
+.device-status{ display:flex; align-items:center; gap:4px; }
+.device-info{ flex:1; }
+.device-details{ display:flex; align-items:center; gap:8px; margin-top:2px; }
+
+/* Device status dots */
+.dot{ 
+  width:10px; 
+  height:10px; 
+  border-radius:50%; 
+  background:#ccc; 
+  position:relative;
+}
+.dot.online{ background:#42b883; }
+.dot.discovered{ background:#ffa500; animation: blink 2s infinite; }
+.dot.connecting{ background:#646cff; animation: pulse 1s infinite; }
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0.3; }
+}
+
+/* Badges */
+.discovery-badge, .connecting-badge{ font-size:12px; }
+.discovered-tag{ 
+  background:#ffa500; 
+  color:white; 
+  padding:2px 6px; 
+  border-radius:10px; 
+  font-size:10px; 
+  font-weight:bold;
+}
+
+/* RSSI signal strength indicators */
+.rssi{ 
+  font-size:11px; 
+  padding:2px 6px; 
+  border-radius:4px; 
+  font-weight:bold;
+}
+.rssi-excellent{ background:#42b883; color:white; }
+.rssi-good{ background:#52c41a; color:white; }
+.rssi-fair{ background:#faad14; color:white; }
+.rssi-poor{ background:#ff4d4f; color:white; }
+
+/* Button and operation styles */
+.ops{ margin-left:auto; }
+.ops button{ padding:4px 8px; }
+.connecting-text{ color:#646cff; font-size:12px; }
+
+/* Legacy styles */
 .send{ display:flex; gap:8px; align-items:center; }
 .send select, .send input{ padding:6px; }
 .messages{ list-style:none; padding:0; margin:0; }

@@ -1,0 +1,13 @@
+{
+  "name":"pigeon-bluetooth",
+  "private":true,
+  "version":"0.1.0",
+  "type":"module",
+  "workspaces":["packages/*","apps/*"],
+  "scripts":{
+    "build":"npm run build -ws",
+    "dev":"npm run dev -w apps/demo",
+    "lint":"echo \"No lint configured\"",
+    "publish:mesh":"npm publish -w packages/mesh --access public"
+  }
+}
